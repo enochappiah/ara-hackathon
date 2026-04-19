@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Wardrobe Agent Demo</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='demo.css') }}">
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="hero">
+        <p class="eyebrow">Ara x JHU Hackathon Demo</p>
+        <h1>Outfit Agent Control Room</h1>
+        <p class="hero-copy">
+          Prefill the onboarding from <code>user_preferences.json</code>, tune the wardrobe,
+          then trigger a live Ara run that should text your phone outfit options for the selected date.
+        </p>
+      </section>
+
+      {% if error_message %}
+        <section class="banner banner-error">{{ error_message }}</section>
+      {% endif %}
+
+      <section class="layout">
+        <form class="panel onboarding-panel" method="post" action="/submit" id="demo-form">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Onboarding</p>
+              <h2>Profile and Delivery</h2>
+            </div>
+            <button class="primary-button" type="submit">Save + Trigger Ara</button>
+          </div>
+
+          <div class="field-grid">
+            <label class="field">
+              <span>Location</span>
+              <input type="text" name="location" value="{{ preferences.location }}" placeholder="Baltimore, Maryland">
+            </label>
+            <label class="field">
+              <span>Style Keywords</span>
+              <input type="text" name="style" value="{{ preferences.style }}" placeholder="formal, polished, minimal">
+            </label>
+            <label class="field">
+              <span>Comfort Preferences</span>
+              <input type="text" name="comfort_preferences" value="{{ preferences.comfort_preferences }}" placeholder="fitted, breathable">
+            </label>
+            <label class="field">
+              <span>Lifestyle</span>
+              <select name="lifestyle">
+                {% for option in ["professional", "active", "sedentary", "casual"] %}
+                  <option value="{{ option }}" {% if preferences.lifestyle == option %}selected{% endif %}>{{ option|title }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label class="field">
+              <span>Repeat Tolerance</span>
+              <input type="text" name="repeat_tolerance" value="{{ preferences.repeat_tolerance }}" placeholder="once a week">
+            </label>
+            <label class="field">
+              <span>Send Outfit Picks For</span>
+              <input type="date" name="target_date" value="{{ target_date }}">
+            </label>
+          </div>
+
+          <div class="panel-header wardrobe-header">
+            <div>
+              <p class="eyebrow">Wardrobe</p>
+              <h2>Editable Closet</h2>
+            </div>
+            <button class="secondary-button" type="button" id="add-item-button">Add Item</button>
+          </div>
+
+          <div id="wardrobe-grid" class="wardrobe-grid"></div>
+          <input type="hidden" name="wardrobe_payload" id="wardrobe-payload">
+        </form>
+
+        <aside class="stack">
+          <section class="panel">
+            <p class="eyebrow">Snapshot</p>
+            <h2>Local State</h2>
+            <div class="metric-grid">
+              <div class="metric">
+                <span class="metric-label">Location</span>
+                <strong>{{ snapshot.profile.location or "Not set" }}</strong>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Confirmed</span>
+                <strong>{{ snapshot.counts.confirmed }}</strong>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Pending</span>
+                <strong>{{ snapshot.counts.pending }}</strong>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Onboarded</span>
+                <strong>{{ "Yes" if snapshot.onboarding_complete else "No" }}</strong>
+              </div>
+            </div>
+            <p class="snapshot-note">{{ snapshot.message_text }}</p>
+          </section>
+
+          <section class="panel">
+            <p class="eyebrow">Preview</p>
+            <h2>Tomorrow's Shortlist</h2>
+            {% if preview and preview.ok %}
+              <p class="forecast-line">
+                {{ preview.weather.location or preferences.location }} · {{ preview.target_date }}
+                · {{ preview.weather.high_f }}F / {{ preview.weather.low_f }}F
+              </p>
+              <div class="option-list">
+                {% for option in preview.options %}
+                  <article class="option-card">
+                    <span class="option-number">0{{ option.option_number }}</span>
+                    <p>{{ option.summary_text }}</p>
+                  </article>
+                {% endfor %}
+              </div>
+              <pre class="result-log">{{ preview.message_text }}</pre>
+            {% else %}
+              <p class="placeholder-copy">
+                Submit the form to build a local preview and then trigger the Ara text flow.
+              </p>
+            {% endif %}
+          </section>
+
+          <section class="panel">
+            <p class="eyebrow">Ara Trigger</p>
+            <h2>Deploy + Run Logs</h2>
+            {% if deploy_result %}
+              <div class="status-line {{ 'status-ok' if deploy_result.ok else 'status-error' }}">
+                Deploy: {{ 'ok' if deploy_result.ok else 'failed' }}
+              </div>
+              <pre class="result-log">{{ deploy_result.output or "No deploy output." }}</pre>
+            {% endif %}
+            {% if run_result %}
+              <div class="status-line {{ 'status-ok' if run_result.ok else 'status-error' }}">
+                Run: {{ 'ok' if run_result.ok else 'failed' }}
+              </div>
+              <pre class="result-log">{{ run_result.output or "No run output." }}</pre>
+            {% elif deploy_result and not deploy_result.ok %}
+              <p class="placeholder-copy">Run was skipped because deploy failed.</p>
+            {% else %}
+              <p class="placeholder-copy">
+                When you submit, the UI will update <code>app.py</code>, run <code>ara deploy app.py</code>,
+                and then run <code>ara run app.py</code>.
+              </p>
+            {% endif %}
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script>
+      const initialItems = {{ preferences.wardrobe_items | tojson }};
+      const wardrobeGrid = document.getElementById("wardrobe-grid");
+      const wardrobePayload = document.getElementById("wardrobe-payload");
+      const form = document.getElementById("demo-form");
+      const categoryOptions = ["top", "bottom", "shoes", "outerwear", "one_piece", "accessory"];
+      const formalityOptions = ["casual", "smart-casual", "formal"];
+      const warmthOptions = [0, 1, 2, 3];
+
+      function renderSelect(options, selectedValue) {
+        return options
+          .map((option) => {
+            const selected = String(option) === String(selectedValue) ? "selected" : "";
+            const label = String(option).replace("_", " ");
+            return `<option value="${option}" ${selected}>${label}</option>`;
+          })
+          .join("");
+      }
+
+      function wardrobeCard(item = {}) {
+        const warmth = item.warmth ?? 1;
+        const comfortTags = Array.isArray(item.comfort_tags) ? item.comfort_tags.join(", ") : (item.comfort_tags || "");
+        return `
+          <article class="wardrobe-card" data-item-id="${item.id || ""}">
+            <div class="wardrobe-row">
+              <label class="field compact">
+                <span>Name</span>
+                <input type="text" class="item-name" value="${item.name || ""}" placeholder="Navy Blazer">
+              </label>
+              <label class="field compact">
+                <span>Category</span>
+                <select class="item-category">${renderSelect(categoryOptions, item.category || "top")}</select>
+              </label>
+            </div>
+            <div class="wardrobe-row">
+              <label class="field compact">
+                <span>Color</span>
+                <input type="text" class="item-color" value="${item.color || ""}" placeholder="navy">
+              </label>
+              <label class="field compact">
+                <span>Material</span>
+                <input type="text" class="item-material" value="${item.material || ""}" placeholder="wool">
+              </label>
+            </div>
+            <div class="wardrobe-row">
+              <label class="field compact">
+                <span>Formality</span>
+                <select class="item-formality">${renderSelect(formalityOptions, item.formality || "casual")}</select>
+              </label>
+              <label class="field compact">
+                <span>Warmth</span>
+                <select class="item-warmth">${renderSelect(warmthOptions, warmth)}</select>
+              </label>
+            </div>
+            <div class="wardrobe-row">
+              <label class="field compact">
+                <span>Comfort Tags</span>
+                <input type="text" class="item-comfort" value="${comfortTags}" placeholder="soft, breathable">
+              </label>
+              <label class="checkbox-field">
+                <input type="checkbox" class="item-active" ${item.active_ok ? "checked" : ""}>
+                <span>Active-friendly</span>
+              </label>
+            </div>
+            <button type="button" class="remove-button">Remove</button>
+          </article>
+        `;
+      }
+
+      function renderWardrobe(items) {
+        wardrobeGrid.innerHTML = items.map((item) => wardrobeCard(item)).join("");
+        bindCardActions();
+      }
+
+      function bindCardActions() {
+        wardrobeGrid.querySelectorAll(".remove-button").forEach((button) => {
+          button.addEventListener("click", () => {
+            button.closest(".wardrobe-card").remove();
+          });
+        });
+      }
+
+      function collectWardrobe() {
+        return Array.from(wardrobeGrid.querySelectorAll(".wardrobe-card"))
+          .map((card, index) => {
+            const name = card.querySelector(".item-name").value.trim();
+            if (!name) {
+              return null;
+            }
+            return {
+              id: card.dataset.itemId || `ui-item-${index + 1}`,
+              name,
+              category: card.querySelector(".item-category").value,
+              color: card.querySelector(".item-color").value.trim().toLowerCase(),
+              material: card.querySelector(".item-material").value.trim().toLowerCase(),
+              formality: card.querySelector(".item-formality").value,
+              warmth: Number(card.querySelector(".item-warmth").value),
+              comfort_tags: card.querySelector(".item-comfort").value
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean),
+              active_ok: card.querySelector(".item-active").checked,
+              source: "manual",
+              status: "confirmed",
+              last_worn_at: null,
+              times_worn: 0
+            };
+          })
+          .filter(Boolean);
+      }
+
+      document.getElementById("add-item-button").addEventListener("click", () => {
+        wardrobeGrid.insertAdjacentHTML("beforeend", wardrobeCard({}));
+        bindCardActions();
+      });
+
+      form.addEventListener("submit", () => {
+        wardrobePayload.value = JSON.stringify(collectWardrobe());
+      });
+
+      renderWardrobe(initialItems);
+      wardrobePayload.value = JSON.stringify(initialItems);
+    </script>
+  </body>
+</html>
